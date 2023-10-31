@@ -3,8 +3,8 @@ import numpy as np
 import openmdao.api as om
 from ..transcription_base import TranscriptionBase
 from ..common import TimeComp, TimeseriesOutputGroup
-from .components import StateIndependentsComp, StateInterpComp, CollocationComp, \
-    PseudospectralTimeseriesOutputComp
+from .components import StateIndependentsComp, StateInterpComp, CollocationComp
+from ..common.timeseries_output_comp import TimeseriesOutputComp
 from ...utils.misc import CoerceDesvar, get_rate_units, reshape_val
 from ...utils.introspection import get_promoted_vars, get_source_metadata, configure_duration_balance_introspection
 from ...utils.constants import INF_BOUND
@@ -95,6 +95,7 @@ class PseudospectralBase(TranscriptionBase):
         if self.any_solved_segs or self.any_connected_opt_segs:
             indep = StateIndependentsComp(grid_data=grid_data,
                                           state_options=phase.state_options)
+            indep.linear_solver = om.DirectSolver()
         else:
             indep = om.IndepVarComp()
 
@@ -513,8 +514,6 @@ class PseudospectralBase(TranscriptionBase):
                 newton.options['stall_limit'] = 3
                 newton.linesearch = om.BoundsEnforceLS()
 
-        # even though you don't need a nl_solver for connections, you still ln_solver since its implicit
-        if self.any_solved_segs or self.any_connected_opt_segs or self._implicit_duration:
             if isinstance(phase.linear_solver, om.LinearRunOnce):
                 phase.linear_solver = om.DirectSolver()
 
@@ -541,10 +540,10 @@ class PseudospectralBase(TranscriptionBase):
             else:
                 ogd = options['transcription'].grid_data
 
-            timeseries_comp = PseudospectralTimeseriesOutputComp(input_grid_data=gd,
-                                                                 output_grid_data=ogd,
-                                                                 output_subset=options['subset'],
-                                                                 time_units=phase.time_options['units'])
+            timeseries_comp = TimeseriesOutputComp(input_grid_data=gd,
+                                                   output_grid_data=ogd,
+                                                   output_subset=options['subset'],
+                                                   time_units=phase.time_options['units'])
             timeseries_group = TimeseriesOutputGroup(has_expr=has_expr, timeseries_output_comp=timeseries_comp)
             phase.add_subsystem(name, subsys=timeseries_group)
 

@@ -9,6 +9,7 @@ from openmdao.core.constants import _ReprClass
 
 # unique object to check if default is given (when None is an allowed value)
 _unspecified = _ReprClass("unspecified")
+_none_or_unspecified = {None, _unspecified}
 
 
 def get_rate_units(units, time_units, deriv=1):
@@ -143,7 +144,7 @@ class CoerceDesvar(object):
                              'as states ({1})'.format(option, self.options['shape']))
 
 
-def CompWrapperConfig(comp_class):
+def CompWrapperConfig(comp_class, config_io_args=None):
     """
     Returns a wrapped comp_class that calls its configure_io method at the end of setup.
 
@@ -153,7 +154,9 @@ def CompWrapperConfig(comp_class):
     Parameters
     ----------
     comp_class : Component class
-       Class that we would like to wrap.
+        Class that we would like to wrap.
+    config_io_args : list
+        Arguments to be passed to config_io.
 
     Returns
     -------
@@ -167,13 +170,14 @@ def CompWrapperConfig(comp_class):
             Appends a call to configure_io after setup.
             """
             super(WrappedClass, self).setup()
-            self.configure_io()
+            args = [] if config_io_args is None else config_io_args
+            self.configure_io(*args)
 
     return WrappedClass
 
 
 # Modify class so we can run it standalone.
-def GroupWrapperConfig(comp_class):
+def GroupWrapperConfig(comp_class, config_io_args=None):
     """
     Returns a wrapped group_class that calls its configure_io method at the end of setup.
 
@@ -184,6 +188,8 @@ def GroupWrapperConfig(comp_class):
     ----------
     comp_class : Group class
        Class that we would like to wrap.
+    config_io_args : list
+        Arguments to be passed to config_io.
 
     Returns
     -------
@@ -202,6 +208,7 @@ def GroupWrapperConfig(comp_class):
             """
             Call configure_io during configure.
             """
-            self.configure_io()
+            args = [] if config_io_args is None else config_io_args
+            self.configure_io(*args)
 
     return WrappedClass

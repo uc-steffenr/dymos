@@ -5,15 +5,15 @@ import numpy as np
 import openmdao.api as om
 from openmdao.utils.om_warnings import warn_deprecation
 
-from ..pseudospectral.components import PseudospectralTimeseriesOutputComp
+from ..common.timeseries_output_comp import TimeseriesOutputComp
 from .explicit_shooting_continuity_comp import ExplicitShootingContinuityComp
 from ..transcription_base import TranscriptionBase
-from ..grid_data import GaussLobattoGrid, RadauGrid, UniformGrid
+from ..grid_data import BirkhoffGrid, GaussLobattoGrid, RadauGrid, UniformGrid
 from .ode_integration_comp import ODEIntegrationComp
 from ..._options import options as dymos_options
 from ...utils.misc import get_rate_units, CoerceDesvar
 from ...utils.indexing import get_src_indices_by_row
-from ...utils.introspection import get_promoted_vars, get_source_metadata, get_targets, get_target_metadata
+from ...utils.introspection import get_promoted_vars, get_source_metadata, get_targets, _get_targets_metadata
 from ...utils.constants import INF_BOUND
 from ..common import TimeComp, TimeseriesOutputGroup, ControlGroup, PolynomialControlGroup, \
     ParameterComp
@@ -62,10 +62,10 @@ class ExplicitShooting(TranscriptionBase):
                                   'setting this option to False should result in faster execution.')
         self.options.declare('subprob_reports', default=False,
                              desc='Controls the reports made when running the subproblems for ExplicitShooting')
-        self.options.declare('grid', types=(GaussLobattoGrid, RadauGrid, str), allow_none=True, default=None,
+        self.options.declare('grid', types=(GaussLobattoGrid, RadauGrid, BirkhoffGrid, str), allow_none=True, default=None,
                              desc='The grid distribution used to layout the control inputs and provide the default '
                                   'output nodes.')
-        self.options.declare('output_grid', types=(GaussLobattoGrid, RadauGrid, UniformGrid), allow_none=True,
+        self.options.declare('output_grid', types=(GaussLobattoGrid, RadauGrid, UniformGrid, BirkhoffGrid), allow_none=True,
                              default=None,
                              desc='The grid distribution determining the location of the output nodes. The default '
                                   'value of None will result in the use of the grid for outputs. This is useful '
@@ -144,7 +144,6 @@ class ExplicitShooting(TranscriptionBase):
             if t_phase_name not in ts_options['outputs'] and phase.timeseries_options['include_t_phase']:
                 phase.add_timeseries_output(t_phase_name, timeseries=ts_name)
 
-        # if times_per_seg is None:
         # Case 1:  Compute times at 'all' node set.
         num_nodes = self._output_grid_data.num_nodes
         node_ptau = self._output_grid_data.node_ptau
@@ -217,12 +216,13 @@ class ExplicitShooting(TranscriptionBase):
                 phase.connect(f'integrator.{name}', [f'ode.{t}' for t in targets], src_indices=src_idxs,
                               flat_src_indices=True if dynamic else None)
 
-        for name, targets in [('t_initial', time_options['t_initial_targets']),
-                              ('t_duration', time_options['t_duration_targets'])]:
-            for t in targets:
-                tgt_shape, _, static_tgt = get_target_metadata(ode, name=name,
-                                                               user_targets=t,
-                                                               user_units=time_options['units'])
+        for name, tgts in [('t_initial', time_options['t_initial_targets']),
+                           ('t_duration', time_options['t_duration_targets'])]:
+
+            targets = _get_targets_metadata(ode, name, user_targets=tgts)
+            for t, meta in targets.items():
+                tgt_shape = meta['shape']
+
                 if tgt_shape == (1,):
                     src_idxs = None
                     flat_src_idxs = None
@@ -424,14 +424,14 @@ class ExplicitShooting(TranscriptionBase):
                               [f'ode.{t}' for t in targets])
 
             # Rate targets
-            rate_targets = get_targets(ode_inputs, control_name, options['rate_targets'], control_rates=1)
+            rate_targets = get_targets(ode_inputs, control_name, options['rate_targets'])
 
             if rate_targets:
                 phase.connect(f'control_rates:{control_name}_rate',
                               [f'ode.{t}' for t in rate_targets])
 
             # Second time derivative targets must be specified explicitly
-            rate2_targets = get_targets(ode_inputs, control_name, options['rate2_targets'], control_rates=2)
+            rate2_targets = get_targets(ode_inputs, control_name, options['rate2_targets'])
 
             if rate2_targets:
                 phase.connect(f'control_rates:{control_name}_rate2',
@@ -518,14 +518,14 @@ class ExplicitShooting(TranscriptionBase):
                               [f'ode.{t}' for t in targets])
 
             # Rate targets
-            rate_targets = get_targets(ode_inputs, control_name, options['rate_targets'], control_rates=1)
+            rate_targets = get_targets(ode_inputs, control_name, options['rate_targets'])
 
             if rate_targets:
                 phase.connect(f'polynomial_control_rates:{control_name}_rate',
                               [f'ode.{t}' for t in rate_targets])
 
             # Second time derivative targets must be specified explicitly
-            rate2_targets = get_targets(ode_inputs, control_name, options['rate2_targets'], control_rates=2)
+            rate2_targets = get_targets(ode_inputs, control_name, options['rate2_targets'])
 
             if rate2_targets:
                 phase.connect(f'polynomial_control_rates:{control_name}_rate2',
@@ -622,10 +622,10 @@ class ExplicitShooting(TranscriptionBase):
                     has_expr = True
                     break
 
-            timeseries_comp = PseudospectralTimeseriesOutputComp(input_grid_data=self._output_grid_data,
-                                                                 output_grid_data=self._output_grid_data,
-                                                                 output_subset=options['subset'],
-                                                                 time_units=phase.time_options['units'])
+            timeseries_comp = TimeseriesOutputComp(input_grid_data=self._output_grid_data,
+                                                   output_grid_data=self._output_grid_data,
+                                                   output_subset=options['subset'],
+                                                   time_units=phase.time_options['units'])
             timeseries_group = TimeseriesOutputGroup(has_expr=has_expr, timeseries_output_comp=timeseries_comp)
             phase.add_subsystem(name, subsys=timeseries_group)
 
@@ -707,18 +707,19 @@ class ExplicitShooting(TranscriptionBase):
 
         if name in phase.parameter_options:
             options = phase.parameter_options[name]
-            if not options['static_target']:
-                src_idxs_raw = np.zeros(self._output_grid_data.subset_num_nodes['all'], dtype=int)
-                src_idxs = get_src_indices_by_row(src_idxs_raw, options['shape'])
-                if options['shape'] == (1,):
-                    src_idxs = src_idxs.ravel()
-            else:
-                src_idxs_raw = np.zeros(1, dtype=int)
-                src_idxs = get_src_indices_by_row(src_idxs_raw, options['shape'])
-                src_idxs = np.squeeze(src_idxs, axis=0)
+            for tgt in options['targets']:
+                if tgt in options['static_targets']:
+                    src_idxs_raw = np.zeros(1, dtype=int)
+                    src_idxs = get_src_indices_by_row(src_idxs_raw, options['shape'])
+                    src_idxs = np.squeeze(src_idxs, axis=0)
+                else:
+                    src_idxs_raw = np.zeros(self._output_grid_data.subset_num_nodes['all'], dtype=int)
+                    src_idxs = get_src_indices_by_row(src_idxs_raw, options['shape'])
+                    if options['shape'] == (1,):
+                        src_idxs = src_idxs.ravel()
 
+                connection_info.append((f'ode.{tgt}', (src_idxs,)))
             connection_info.append(([f'integrator.parameters:{name}'], None))
-            connection_info.append(([f'ode.{tgt}' for tgt in options['targets']], (src_idxs,)))
 
         return connection_info
 

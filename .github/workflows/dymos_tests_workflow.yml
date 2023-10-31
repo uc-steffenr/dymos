@@ -29,7 +29,7 @@ jobs:
           # baseline versions
           - NAME: baseline
             PY: '3.10'
-            NUMPY: 1.22
+            NUMPY: 1.22.4
             SCIPY: 1.7
             PETSc: 3.17
             PYOPTSPARSE: 'v2.9.3'
@@ -57,6 +57,15 @@ jobs:
             OPENMDAO: 'latest'
             OPTIONAL: '[test]'
 
+          # baseline versions except no MPI/PETSc
+          - NAME: no_mpi
+            PY: '3.10'
+            NUMPY: 1.22
+            SCIPY: 1.7
+            PYOPTSPARSE: 'v2.9.3'
+            OPENMDAO: 'latest'
+            OPTIONAL: '[test]'
+
           # try latest versions
           - NAME: latest
             PY: 3
@@ -67,7 +76,7 @@ jobs:
             SNOPT: 7.7
             OPENMDAO: 'dev'
             OPTIONAL: '[test]'
-            JAX: '0.3.24'
+            JAX: 'latest'
 
           # oldest supported versions
           - NAME: oldest
@@ -79,7 +88,7 @@ jobs:
             PETSc: 3.13
             PYOPTSPARSE: 'v2.6.1'
             SNOPT: 7.2
-            OPENMDAO: 3.26.0
+            OPENMDAO: 3.27.0
             OPTIONAL: '[test]'
 
     steps:
@@ -151,7 +160,20 @@ jobs:
           echo "============================================================="
           echo "Install jax"
           echo "============================================================="
-          python -m pip install jaxlib==${{ matrix.JAX }} jax==${{ matrix.JAX }}
+          if [[ "${{ matrix.JAX }}" == "latest" ]]; then
+            python -m pip install jaxlib jax
+          else
+            python -m pip install jaxlib==${{ matrix.JAX }} jax==${{ matrix.JAX }}
+          fi
+
+      - name: Install greenlet
+        if: env.NAME == 'latest'
+        shell: bash -l {0}
+        run: |
+          echo "============================================================="
+          echo "Install greenlet from wheels"
+          echo "============================================================="
+          pip install --only-binary :all: greenlet
 
       - name: Install PETSc
         if: env.RUN_BUILD && matrix.PETSc
@@ -259,14 +281,14 @@ jobs:
           echo "============================================================="
           echo "Check installed versions of Python, Numpy and Scipy"
           echo "============================================================="
-          python -c "import sys; assert str(sys.version).startswith(str(${{ matrix.PY }})), \
-                    f'Python version {sys.version} is not the requested version (${{ matrix.PY }})'"
+          python -c "ver='${{ matrix.PY }}'; import sys; assert str(sys.version).startswith(ver), \
+                    f'Python version {sys.version} is not the requested version ({ver})'"
 
-          python -c "import numpy; assert str(numpy.__version__).startswith(str(${{ matrix.NUMPY }})), \
-                    f'Numpy version {numpy.__version__} is not the requested version (${{ matrix.NUMPY }})'"
+          python -c "ver='${{ matrix.NUMPY }}'; import numpy; assert str(numpy.__version__).startswith(ver), \
+                    f'Numpy version {numpy.__version__} is not the requested version ({ver})'"
 
-          python -c "import scipy; assert str(scipy.__version__).startswith(str(${{ matrix.SCIPY }})), \
-                    f'Scipy version {scipy.__version__} is not the requested version (${{ matrix.SCIPY }})'"
+          python -c "ver='${{ matrix.SCIPY }}'; import scipy; assert str(scipy.__version__).startswith(ver), \
+                    f'Scipy version {scipy.__version__} is not the requested version ({ver})'"
 
       - name: 'Upload environment artifact'
         uses: actions/upload-artifact@v3
@@ -290,10 +312,14 @@ jobs:
           testflo -n 1 joss/test --pre_announce
           testflo -b benchmark --pre_announce
           cd $HOME
-          testflo dymos -n 2 --show_skipped --coverage --durations 20 --coverpkg dymos
+          if [[ "${{ matrix.NAME }}" != "latest" ]]; then
+            testflo dymos -n 2 --show_skipped --durations 20 --coverage --coverpkg dymos
+          else
+            testflo dymos -n 2 --show_skipped --durations 20
+          fi
 
       - name: Submit coverage
-        if: (github.event_name != 'workflow_dispatch')
+        if: ((github.event_name != 'workflow_dispatch') && (matrix.NAME != 'latest'))
         shell: bash -l {0}
         env:
           COVERALLS_REPO_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -6,8 +6,7 @@ from ...utils.introspection import configure_analytic_states_introspection, get_
     get_source_metadata, configure_analytic_states_discovery
 from ...utils.indexing import get_src_indices_by_row
 from ..grid_data import GridData
-from .analytic_timeseries_output_comp import AnalyticTimeseriesOutputComp
-from ..common import TimeComp, TimeseriesOutputGroup
+from ..common import TimeComp, TimeseriesOutputGroup, TimeseriesOutputComp
 from ..._options import options as dymos_options
 
 
@@ -315,10 +314,10 @@ class Analytic(TranscriptionBase):
             else:
                 ogd = options['transcription'].grid_data
 
-            timeseries_comp = AnalyticTimeseriesOutputComp(input_grid_data=gd,
-                                                           output_grid_data=ogd,
-                                                           output_subset=options['subset'],
-                                                           time_units=phase.time_options['units'])
+            timeseries_comp = TimeseriesOutputComp(input_grid_data=gd,
+                                                   output_grid_data=ogd,
+                                                   output_subset=options['subset'],
+                                                   time_units=phase.time_options['units'])
 
             timeseries_group = TimeseriesOutputGroup(has_expr=has_expr, timeseries_output_comp=timeseries_comp)
             phase.add_subsystem(name, subsys=timeseries_group)
@@ -425,18 +424,17 @@ class Analytic(TranscriptionBase):
 
         if name in phase.parameter_options:
             options = phase.parameter_options[name]
-            if not options['static_target']:
-                src_idxs_raw = np.zeros(self.grid_data.subset_num_nodes['all'], dtype=int)
-                src_idxs = get_src_indices_by_row(src_idxs_raw, options['shape'])
-                if options['shape'] == (1,):
-                    src_idxs = src_idxs.ravel()
-            else:
-                src_idxs_raw = np.zeros(1, dtype=int)
-                src_idxs = get_src_indices_by_row(src_idxs_raw, options['shape'])
-                src_idxs = np.squeeze(src_idxs, axis=0)
-
-            rhs_tgts = [f'rhs.{t}' for t in options['targets']]
-            connection_info.append((rhs_tgts, (src_idxs,)))
+            for tgt in options['targets']:
+                if tgt in options['static_targets']:
+                    src_idxs_raw = np.zeros(1, dtype=int)
+                    src_idxs = get_src_indices_by_row(src_idxs_raw, options['shape'])
+                    src_idxs = np.squeeze(src_idxs, axis=0)
+                else:
+                    src_idxs_raw = np.zeros(self.grid_data.subset_num_nodes['all'], dtype=int)
+                    src_idxs = get_src_indices_by_row(src_idxs_raw, options['shape'])
+                    if options['shape'] == (1,):
+                        src_idxs = src_idxs.ravel()
+                connection_info.append((f'rhs.{tgt}', (src_idxs,)))
 
         return connection_info
 

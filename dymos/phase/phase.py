@@ -1,4 +1,4 @@
-from collections.abc import Iterable, Callable
+from collections.abc import Iterable, Callable, Sequence
 import inspect
 import warnings
 
@@ -57,7 +57,6 @@ class Phase(om.Group):
     **kwargs : dict
         Dictionary of optional phase arguments.
     """
-
     def __init__(self, from_phase=None, **kwargs):
         _kwargs = kwargs.copy()
 
@@ -902,7 +901,7 @@ class Phase(om.Group):
                       desc=_unspecified, lower=_unspecified, upper=_unspecified, scaler=_unspecified,
                       adder=_unspecified, ref0=_unspecified, ref=_unspecified, targets=_unspecified,
                       shape=_unspecified, dynamic=_unspecified, static_target=_unspecified,
-                      include_timeseries=_unspecified):
+                      include_timeseries=_unspecified, static_targets=_unspecified):
         """
         Add a parameter (static control variable) to the phase.
 
@@ -948,6 +947,12 @@ class Phase(om.Group):
             (meaning they cannot have a unique value at each node).  Otherwise False.
         include_timeseries : bool
             True if the static parameters should be included in output timeseries, else False.
+        static_targets : bool or Sequence or _unspecified
+            True if ALL targets in the ODE are not shaped with num_nodes as the first dimension
+            (meaning they cannot have a unique value at each node).  If False, ALL targets are
+            expected to be shaped with the first dimension as the number of nodes. If given
+            as a Sequence, it provides those targets not shaped with num_nodes. If left _unspecified,
+            static targets will be determined automatically.
         """
         self.check_parameter(name)
 
@@ -955,16 +960,18 @@ class Phase(om.Group):
             self.parameter_options[name] = ParameterOptionsDictionary()
             self.parameter_options[name]['name'] = name
 
-        self.set_parameter_options(name, val, units, opt, desc, lower, upper,
-                                   scaler, adder, ref0, ref, targets, shape, dynamic,
-                                   static_target, include_timeseries)
+        self.set_parameter_options(name, val=val, units=units, opt=opt, desc=desc,
+                                   lower=lower, upper=upper, scaler=scaler, adder=adder,
+                                   ref0=ref0, ref=ref, targets=targets, shape=shape, dynamic=dynamic,
+                                   static_target=static_target, static_targets=static_targets,
+                                   include_timeseries=include_timeseries)
 
     def set_parameter_options(self, name, val=_unspecified, units=_unspecified, opt=False,
                               desc=_unspecified, lower=_unspecified, upper=_unspecified,
                               scaler=_unspecified, adder=_unspecified, ref0=_unspecified,
                               ref=_unspecified, targets=_unspecified, shape=_unspecified,
                               dynamic=_unspecified, static_target=_unspecified,
-                              include_timeseries=_unspecified):
+                              include_timeseries=_unspecified, static_targets=_unspecified):
         """
         Set options for an existing parameter (static control variable) in the phase.
 
@@ -1010,6 +1017,12 @@ class Phase(om.Group):
             (meaning they cannot have a unique value at each node).  Otherwise False.
         include_timeseries : bool
             True if the static parameters should be included in output timeseries, else False.
+        static_targets : bool or Sequence or _unspecified
+            True if ALL targets in the ODE are not shaped with num_nodes as the first dimension
+            (meaning they cannot have a unique value at each node).  If False, ALL targets are
+            expected to be shaped with the first dimension as the number of nodes. If given
+            as a Sequence, it provides those targets not shaped with num_nodes. If left _unspecified,
+            static targets will be determined automatically.
         """
         if units is not _unspecified:
             self.parameter_options[name]['units'] = units
@@ -1035,22 +1048,26 @@ class Phase(om.Group):
                 self.parameter_options[name]['shape'] = tuple(shape)
             else:
                 self.parameter_options[name]['shape'] = shape
-        elif val is not _unspecified:
-            if isinstance(val, float) or isinstance(val, int) or isinstance(val, complex):
-                self.parameter_options[name]['shape'] = (1,)
-            else:
-                self.parameter_options[name]['shape'] = tuple(np.asarray(val).shape)
 
         if dynamic is not _unspecified:
-            self.parameter_options[name]['static_target'] = not dynamic
+            self.parameter_options[name]['static_targets'] = not dynamic
 
         if static_target is not _unspecified:
-            self.parameter_options[name]['static_target'] = static_target
+            self.parameter_options[name]['static_targets'] = static_target
+
+        if static_targets is not _unspecified:
+            self.parameter_options[name]['static_targets'] = static_targets
 
         if dynamic is not _unspecified and static_target is not _unspecified:
-            raise ValueError("Both the deprecated 'dynamic' option and option 'static_target' were "
+            raise ValueError("Both the deprecated 'dynamic' option and option 'static_target' were\n"
+                             f"specified for parameter '{name}'. Going forward, please use only\n"
+                             "option static_targets. Options 'dynamic' and 'static_target'\n"
+                             "will be removed in Dymos 2.0.0.")
+
+        if dynamic is not _unspecified and static_targets is not _unspecified:
+            raise ValueError("Both the deprecated 'dynamic' option and option 'static_targets' were "
                              f"specified for parameter '{name}'. Going forward, please use only "
-                             "option static_target.  Option 'dynamic' will be removed in "
+                             "option static_targets.  Option 'dynamic' will be removed in "
                              "Dymos 2.0.0.")
 
         if lower is not _unspecified:
@@ -1184,9 +1201,14 @@ class Phase(om.Group):
 
         # Automatically add the requested variable to the timeseries outputs if it's an ODE output.
         var_type = self.classify_var(name)
-        if var_type == 'ode':
+        if var_type == 'ode' or 'control_rate' in var_type:
+            if self.timeseries_options['use_prefix']:
+                if var_type.startswith('control_rate'):
+                    bc['constraint_name'] = f'control_rates:{constraint_name}'
+                elif var_type.startswith('polynomial_control_rate'):
+                    bc['constraint_name'] = f'polynomial_control_rates:{constraint_name}'
             if constraint_name not in self._timeseries['timeseries']['outputs']:
-                self.add_timeseries_output(name, output_name=constraint_name, units=units, shape=shape)
+                self.add_timeseries_output(name, output_name=bc['constraint_name'], units=units, shape=shape)
 
     def add_path_constraint(self, name, constraint_name=None, units=None, shape=None, indices=None,
                             lower=None, upper=None, equals=None, scaler=None, adder=None, ref=None,
@@ -1291,9 +1313,14 @@ class Phase(om.Group):
 
         # Automatically add the requested variable to the timeseries outputs if it's an ODE output.
         var_type = self.classify_var(name)
-        if var_type == 'ode':
+        if var_type == 'ode' or 'control_rate' in var_type:
+            if self.timeseries_options['use_prefix']:
+                if var_type.startswith('control_rate'):
+                    pc['constraint_name'] = f'control_rates:{constraint_name}'
+                elif var_type.startswith('polynomial_control_rate'):
+                    pc['constraint_name'] = f'polynomial_control_rates:{constraint_name}'
             if constraint_name not in self._timeseries['timeseries']['outputs']:
-                self.add_timeseries_output(name, output_name=constraint_name, units=units, shape=shape)
+                self.add_timeseries_output(name, output_name=pc['constraint_name'], units=units, shape=shape)
 
     def add_timeseries_output(self, name, output_name=None, units=_unspecified, shape=_unspecified,
                               timeseries='timeseries', **kwargs):
@@ -1444,7 +1471,11 @@ class Phase(om.Group):
         rate : bool
             If True, add the rate of change of the named variable to the timeseries outputs of the
             phase.  The rate variable will be named f'{name}_rate'.  Defaults to False.
-        expr :
+        expr : bool
+            True if the given name is an expression for an ExecComp.
+        expr_kwargs : dict
+            Keyword arguments for the expression.
+
 
         Returns
         -------
@@ -2183,7 +2214,7 @@ class Phase(om.Group):
             res = res.T
         return res
 
-    def get_simulation_phase(self, times_per_seg=None, method=_unspecified, atol=_unspecified,
+    def get_simulation_phase(self, times_per_seg=_unspecified, method=_unspecified, atol=_unspecified,
                              rtol=_unspecified, first_step=_unspecified, max_step=_unspecified,
                              reports=False):
         """
@@ -2220,6 +2251,7 @@ class Phase(om.Group):
             times.  This instance has not yet been setup.
         """
         from .simulation_phase import SimulationPhase
+
         sim_phase = SimulationPhase(from_phase=self, times_per_seg=times_per_seg, method=method,
                                     atol=atol, rtol=rtol, first_step=first_step, max_step=max_step,
                                     reports=reports)
@@ -2292,10 +2324,7 @@ class Phase(om.Group):
 
             # We use this private function to grab the correctly sized variable from the
             # auto_ivc source.
-            if om_version < (3, 4, 1):
-                val = phs.get_val(f'parameters:{name}', units=units)[0, ...]
-            else:
-                val = phs.get_val(f'parameters:{name}', units=units)
+            val = phs.get_val(f'parameters:{name}', units=units)
 
             if phase_path:
                 prob_path = f'{phase_path}.{self.name}.parameters:{name}'
@@ -2303,7 +2332,7 @@ class Phase(om.Group):
                 prob_path = f'{self.name}.parameters:{name}'
             prob.set_val(prob_path, val)
 
-    def simulate(self, times_per_seg=10, method=_unspecified, atol=_unspecified, rtol=_unspecified,
+    def simulate(self, times_per_seg=None, method=_unspecified, atol=_unspecified, rtol=_unspecified,
                  first_step=_unspecified, max_step=_unspecified, record_file=None):
         """
         Simulate the Phase using scipy.integrate.solve_ivp.
@@ -2336,7 +2365,7 @@ class Phase(om.Group):
         """
         sim_prob = om.Problem(model=om.Group())
 
-        sim_phase = self.get_simulation_phase(times_per_seg, method=method, atol=atol, rtol=rtol,
+        sim_phase = self.get_simulation_phase(times_per_seg=times_per_seg, method=method, atol=atol, rtol=rtol,
                                               first_step=first_step, max_step=max_step)
 
         sim_prob.model.add_subsystem(self.name, sim_phase)
@@ -2346,9 +2375,9 @@ class Phase(om.Group):
             sim_prob.add_recorder(rec)
 
         sim_prob.setup(check=True)
+        sim_prob.final_setup()
 
-        # sim_phase.set_val_from_phase(from_phase=self)  # TODO: use this for OpenMDAO >= 3.25.1
-        sim_phase.initialize_values_from_phase(prob=sim_prob, from_phase=self)
+        sim_phase.set_vals_from_phase(from_phase=self)
 
         print(f'\nSimulating phase {self.pathname}')
         sim_prob.run_model()
@@ -2391,7 +2420,7 @@ class Phase(om.Group):
             self.refine_options['smoothness_factor'] = smoothness_factor
 
     def set_simulate_options(self, method=_unspecified, atol=_unspecified, rtol=_unspecified,
-                             first_step=_unspecified, max_step=_unspecified):
+                             first_step=_unspecified, max_step=_unspecified, times_per_seg=_unspecified):
         """
         Set the specified option(s) for grid refinement in the phase.
 
@@ -2407,6 +2436,8 @@ class Phase(om.Group):
             Initial step size for the integration.
         max_step : float
             Maximum step size for the integration.
+        times_per_seg : int
+            The number of time steps to output per segment.
         """
         if method is not _unspecified:
             self.simulate_options['method'] = method
@@ -2418,6 +2449,8 @@ class Phase(om.Group):
             self.simulate_options['first_step'] = first_step
         if max_step is not _unspecified:
             self.simulate_options['max_step'] = max_step
+        if times_per_seg is not _unspecified:
+            self.simulate_options['times_per_seg'] = times_per_seg
 
     def is_time_fixed(self, loc):
         """
@@ -2704,13 +2737,17 @@ class Phase(om.Group):
 
         prev_timeseries_prom_path, _, _ = prev_time_path.rpartition(f'.{integration_name}')
         prev_phase_prom_path, _, _ = prev_timeseries_prom_path.rpartition('.timeseries')
-
         prev_time_val = prev_vars[prev_time_path]['val']
-        prev_time_val, unique_idxs = np.unique(prev_time_val, return_index=True)
-        prev_time_units = prev_vars[prev_time_path]['units']
 
         t_initial = prev_time_val[0]
         t_duration = prev_time_val[-1] - prev_time_val[0]
+        prev_time_val, unique_idxs = np.unique(prev_time_val, return_index=True)
+        prev_time_units = prev_vars[prev_time_path]['units']
+
+        if t_duration < 0:
+            # Unique sorts the data. In reverse-time phases, we need to undo it.
+            prev_time_val = np.flip(prev_time_val, axis=0)
+            unique_idxs = np.flip(unique_idxs, axis=0)
 
         self.set_val('t_initial', t_initial, units=prev_time_units)
         self.set_val('t_duration', t_duration, units=prev_time_units)
